@@ -47,8 +47,6 @@ const obtenerHorarioPorZona = () => {
 const iniciarTurno = (chatId) => {
   const ahoraColombia = moment().tz("America/Bogota");
   const inicioColombia = ahoraColombia.format("HH:mm");
-
-  // Crear una copia de ahoraColombia para no modificar el original
   const finColombia = ahoraColombia.clone().add(2, "hours").format("HH:mm");
 
   // Guardar las horas por país
@@ -61,12 +59,23 @@ const iniciarTurno = (chatId) => {
   };
 
   turnoActivo = true;
-  turnoInicio = inicioColombia; // Guardamos la hora de inicio
-
-  // Usar la copia de ahoraColombia para el cálculo de fin
+  turnoInicio = inicioColombia;
   turnoFin = ahoraColombia.clone().add(2, "hours");
 
-  // Enviar mensaje con las horas de inicio y fin para todos los países
+  // 1️⃣ Limpiar las zonas antes de iniciar el nuevo turno
+  Object.keys(zonas).forEach((zona) => {
+    zonas[zona] = { usuario: null, tiempo: 0, inicio: null, fin: null };
+  });
+
+  // 2️⃣ Asignar los primeros tres de la lista de espera a las zonas
+  for (let i = 0; i < 3; i++) {
+    if (espera.length > 0) {
+      const usuario = espera.shift(); // Sacar el primero de la lista de espera
+      zonas[`zona${i + 1}`] = { usuario, inicio: inicioColombia, fin: finColombia };
+    }
+  }
+
+  // 3️⃣ Enviar mensaje del turno
   bot.telegram.sendMessage(
     chatId,
     `✅ *Nuevo turno iniciado*\n🕒 *Hora de inicio:* ${turnoInicio} 🇨🇴\n⏳ *Hora de fin:* ${turnoFin.format("HH:mm")} 🇨🇴\n\n` +
@@ -74,16 +83,18 @@ const iniciarTurno = (chatId) => {
       `🇻🇪 *Hora Venezuela:* ${horariosTurno.venezuela}\n` +
       `🇦🇷 *Hora Argentina:* ${horariosTurno.argentina}\n` +
       `🇪🇸 *Hora España:* ${horariosTurno.españa}`,
-    { parse_mode: "MarkdownV2" },
+    { parse_mode: "MarkdownV2" }
   );
 
-  setTimeout(
-    () => {
-      iniciarTurno(chatId); // Llamamos recursivamente con el chatId
-    },
-    2 * 60 * 60 * 1000, // 2 horas
-  );
+  // 4️⃣ Enviar el estado después de actualizar las zonas
+  bot.telegram.sendMessage(chatId, obtenerEstado(), { parse_mode: "MarkdownV2" });
+
+  // Programar el siguiente turno en 2 horas
+  setTimeout(() => {
+    iniciarTurno(chatId);
+  }, 2 * 60 * 60 * 1000);
 };
+
 
 // Comando para abrir el servicio
 bot.command("abrir", (ctx) => {
