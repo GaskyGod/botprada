@@ -10,13 +10,15 @@ let turnoActivo = false;
 let turnoInicio = null; // Guardar hora de inicio del turno
 let turnoFin = null; // Guardar hora de fin del turno
 let horariosTurno = {}; // Objeto para guardar las horas de inicio y fin por país
+let turnoTimeout = null;
 
 // Zonas y lista de espera
 const zonas = {
-  zona1: { usuario: null, tiempo: 0, inicio: null, fin: null },
-  zona2: { usuario: null, tiempo: 0, inicio: null, fin: null },
-  zona3: { usuario: null, tiempo: 0, inicio: null, fin: null },
+  z1: { usuario: null, tiempo: 0, inicio: null, fin: null },
+  z2: { usuario: null, tiempo: 0, inicio: null, fin: null },
+  z3: { usuario: null, tiempo: 0, inicio: null, fin: null },
 };
+
 const espera = [];
 
 // Función para escapar caracteres especiales en MarkdownV2
@@ -62,20 +64,18 @@ const iniciarTurno = (chatId) => {
   turnoInicio = inicioColombia;
   turnoFin = ahoraColombia.clone().add(2, "hours");
 
-  // 1️⃣ Limpiar las zonas antes de iniciar el nuevo turno
+  // Limpiar zonas antes de iniciar nuevo turno
   Object.keys(zonas).forEach((zona) => {
     zonas[zona] = { usuario: null, tiempo: 0, inicio: null, fin: null };
   });
-
-  // 2️⃣ Asignar los primeros tres de la lista de espera a las zonas
+  
   for (let i = 0; i < 3; i++) {
     if (espera.length > 0) {
-      const usuario = espera.shift(); // Sacar el primero de la lista de espera
-      zonas[`zona${i + 1}`] = { usuario, inicio: inicioColombia, fin: finColombia };
+      const usuario = espera.shift();
+      zonas[`z${i + 1}`] = { usuario, inicio: inicioColombia, fin: finColombia };
     }
   }
 
-  // 3️⃣ Enviar mensaje del turno
   bot.telegram.sendMessage(
     chatId,
     `✅ *Nuevo turno iniciado*\n🕒 *Hora de inicio:* ${turnoInicio} 🇨🇴\n⏳ *Hora de fin:* ${turnoFin.format("HH:mm")} 🇨🇴\n\n` +
@@ -86,11 +86,15 @@ const iniciarTurno = (chatId) => {
     { parse_mode: "MarkdownV2" }
   );
 
-  // 4️⃣ Enviar el estado después de actualizar las zonas
   bot.telegram.sendMessage(chatId, obtenerEstado(), { parse_mode: "MarkdownV2" });
 
+  // 🛑 Asegurar que no haya múltiples temporizadores activos
+  if (turnoTimeout) {
+    clearTimeout(turnoTimeout);
+  }
+
   // Programar el siguiente turno en 2 horas
-  setTimeout(() => {
+  turnoTimeout = setTimeout(() => {
     iniciarTurno(chatId);
   }, 2 * 60 * 60 * 1000);
 };
@@ -114,6 +118,12 @@ bot.command("cerrar", (ctx) => {
   servicioActivo = false;
   turnoActivo = false;
   espera.length = 0; // Vaciar la lista de espera
+
+  if (turnoTimeout) {
+    clearTimeout(turnoTimeout);
+    turnoTimeout = null;
+  }
+
   ctx.reply("🚫 *Servicio cerrado* y lista de espera vaciada", {
     parse_mode: "MarkdownV2",
   });
@@ -145,11 +155,12 @@ const obtenerEstado = () => {
 
   // Estado de las zonas
   for (const [key, value] of Object.entries(zonas)) {
-    const emojiZona = key === "zona1" ? "1️⃣" : key === "zona2" ? "2️⃣" : "3️⃣";
-    estado += `🔹 Zona ${emojiZona}: ${
+    const numeroZona = key.replace("z", ""); // Convierte "z1" en "1"
+    estado += `🔹 Zona ${numeroZona}️⃣: ${
       value.usuario ? `@${escapeMarkdownV2(value.usuario)}` : "Vacío"
     }\n`;
   }
+  
 
   // Estado de la lista de espera
   estado += `⏳ Rotación en ${minutosRestantes} minutos\n`;
@@ -163,7 +174,7 @@ const obtenerEstado = () => {
 };
 
 // Comando /estado
-bot.command("estado", (ctx) => {
+bot.command("lista", (ctx) => {
   ctx.reply(obtenerEstado(), { parse_mode: "MarkdownV2" });
 });
 
@@ -199,7 +210,7 @@ const asignarZona = (zona, usuario, ctx) => {
 };
 
 // Comandos /zona1, /zona2, /zona3
-["zona1", "zona2", "zona3"].forEach((zona) => {
+["z1", "z2", "z3"].forEach((zona) => {
   bot.command(zona, (ctx) => {
     let usuario = ctx.from.username || ctx.from.first_name;
 
@@ -215,20 +226,25 @@ const asignarZona = (zona, usuario, ctx) => {
 
 // Comando /espera
 bot.command("espera", (ctx) => {
-  const usuario = ctx.from.username || ctx.from.first_name;
+  let usuario = ctx.from.username || ctx.from.first_name;
+
+  // Verificar si el comando incluye un @usuario
+  const mention = ctx.message.text.split(" ")[1]; 
+  if (mention && mention.startsWith("@")) {
+    usuario = mention.substring(1); // Extraer nombre sin el "@"
+  }
 
   if (espera.includes(usuario))
-    return ctx.reply("⚠️ Ya estás en la lista de espera", {
+    return ctx.reply(`⚠️ @${escapeMarkdownV2(usuario)} ya está en la lista de espera`, {
       parse_mode: "MarkdownV2",
     });
 
   espera.push(usuario);
-  // Después de añadir al usuario a la lista de espera:
+
   ctx.reply(`✅ @${escapeMarkdownV2(usuario)} añadido a la lista de espera`, {
     parse_mode: "MarkdownV2",
   });
 
-  // Agregar esta línea para mostrar el estado:
   ctx.reply(obtenerEstado(), { parse_mode: "MarkdownV2" });
 });
 
@@ -255,24 +271,27 @@ const eliminarDeZona = (zona, ctx) => {
 };
 
 // Comandos /delzona1, /delzona2, /delzona3
-["zona1", "zona2", "zona3"].forEach((zona) => {
-  bot.command(`del${zona}`, (ctx) => eliminarDeZona(zona, ctx));
+["z1", "z2", "z3"].forEach((zona) => {
+  bot.command(`exit${zona}`, (ctx) => eliminarDeZona(zona, ctx));
 });
+
+
 
 // Comando /comandos
 bot.command("comandos", (ctx) => {
   ctx.reply(
     "📌 *Lista de Comandos:*\n\n" +
-      "/zona1 ➖ Asignarse a la Zona 1️⃣\n" +
-      "/zona2 ➖ Asignarse a la Zona 2️⃣\n" +
-      "/zona3 ➖ Asignarse a la Zona 3️⃣\n" +
+      "/z1 ➖ Asignarse a la Zona 1️⃣\n" +
+      "/z2 ➖ Asignarse a la Zona 2️⃣\n" +
+      "/z3 ➖ Asignarse a la Zona 3️⃣\n" +
       "/espera ➖ Añadirse a la lista de espera\n" +
-      "/delzona1 ➖ Eliminar usuario de la Zona 1️⃣\n" +
-      "/delzona2 ➖ Eliminar usuario de la Zona 2️⃣\n" +
-      "/delzona3 ➖ Eliminar usuario de la Zona 3️⃣\n" +
-      "/estado ➖ Ver el estado actual\n" +
+      "/espera @usuario ➖ Añadir a alguien a la lista de espera\n" +
+      "/exitz1 ➖ Eliminar usuario de la Zona 1️⃣\n" +
+      "/exitz2 ➖ Eliminar usuario de la Zona 2️⃣\n" +
+      "/exitz3 ➖ Eliminar usuario de la Zona 3️⃣\n" +
+      "/lista ➖ Ver el estado actual\n" +
       "/reglas ➖ Ver las reglas del grupo\n",
-    { parse_mode: "MarkdownV2" },
+    { parse_mode: "MarkdownV2" }
   );
 });
 
